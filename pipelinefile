@@ -1,0 +1,42 @@
+pipeline{
+    agent any
+    stages {
+        
+        stage('init'){
+           steps{
+           echo "============================< 开始构建 >========================================="
+           git branch: "${BRANCH_NAME}", credentialsId: '1111-2222-11111-11111-111111', url: "${GIT_PATH}"
+           script {
+                build_tag = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                imageTag = "${imageName}-${build_tag}"
+            }
+            echo "${build_tag}"
+                }    
+        }
+       stage('Maven Build') {
+            steps {
+                sh 'mvn -f pom.xml clean package -Denv=pre -U -DskipTests=true'
+            }
+        }
+       stage("docker image build"){
+           steps{
+               echo "${imageTag}"
+               sh 'tar -C $ProjectPath -czf ${appName}.tgz ./$appName'
+               sh 'ansible docker-registry -m unarchive -a "src=${appName}.tgz dest=/var/jenkins/build_images/public_dev/"'
+              sh  "ansible docker-registry -m command -a '/bin/sh  /var/jenkins/scripts/build_docker_images.sh  ${appName} dev 1.8.0_191 ${imageTag}'"
+                            
+           }
+        }
+        stage("create helm package"){
+           steps{
+             sh 'ansible devcluster -m command -a "/bin/bash /home/admin/helmTemplate/createHelm.sh $appVersion $appName dev"'  
+           }
+        }
+        stage("helm install"){
+           steps{
+           sh 'ansible devcluster -m command -a  "helm repo update"'
+           sh "ansible devcluster -m command -a 'helm upgrade  --force --recreate-pods ${appName} localself-repo/${appName} --install --set image.imageName=${imageTag},service.port=${port},livenessProbe.port=${port},ports.containerPort=${port},iptype=${iptype},resources.limits.memory=1048Mi'" 
+           }
+        }
+    }
+}
