@@ -1,0 +1,241 @@
+{{- if .Values.statefulset.enabled }}
+apiVersion: apps/v1beta2
+kind: StatefulSet
+{{- else }}
+apiVersion: apps/v1beta2
+kind: Deployment
+{{- end }}
+metadata:
+  name: prd-{{ include "Tchart.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "Tchart.name" . }}
+    helm.sh/chart: {{ include "Tchart.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "Tchart.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      {{- if .Values.arms }}
+      annotations:
+        armsPilotAutoEnable: 'on'
+        armsPilotCreateAppName: prd-{{ include "Tchart.name" . }}
+      {{- end }}
+      labels:
+        app.kubernetes.io/name: {{ include "Tchart.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+     {{- if .Values.hostAliases }}
+      hostAliases:
+{{ toYaml .Values.hostAliases | indent 8 }}
+     {{- end }}
+      shareProcessNamespace: true
+      {{- if eq .Values.appType "war" }}
+      initContainers:
+      - image: {{ .Values.image.imageName }}
+        name: war
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["sh"]
+        args: ["-c","cp -r /*.war /app; cp -r /server.xml /app"]
+        volumeMounts:
+          - mountPath: /app
+            name: app-volume
+{{- if .Values.addhost }}
+      hostAliases:
+      - ip: {{ .Values.ip |quote }}
+        hostnames:
+        - {{ .Values.hostnames |quote }}
+{{- end }}            
+      containers:
+      - name: {{ .Chart.Name }}
+        image: xxx.xxxx.xxxx/base/tomcat7:1.8.0_191n
+        command: ["sh"]
+        args: ["-c","cp -r /app/tomcat/webapps/server.xml /app/tomcat/conf/server.xml;/entrypoint.sh"]
+      {{- else if eq .Values.appType "jar" }}
+      initContainers:
+      - name: jar
+        image: {{ .Values.image.imageName }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["sh"]
+        args: ["-c","cp -r /*.jar /app; cp  -r /entrypoint.sh /app"]
+        volumeMounts:
+          - mountPath: /app
+            name: app-volume
+      containers:
+      - name: {{ .Chart.Name }}
+        image: xxx.xxxx.xxx/base/java:1.8.0_191n
+        command: ["sh"]
+        args: ["-c","/app/entrypoint.sh"]
+      {{- else if eq .Values.appType "shell" }}
+      initContainers:
+      - name: shell
+        image: {{ .Values.image.imageName }}
+        command: ["sh"]
+        args: ["-c", 'cp -r /{{ include "Tchart.name" . }} /app ;cp -r /entrypoint.sh /app']
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        volumeMounts:
+          - mountPath: /app
+            name: app-volume
+      containers:
+      - name: {{ .Chart.Name }}
+        image: xxx.xxx.xxx/base/java:1.8.0_191n
+        command: ["sh"]
+        args: ["-c","/app/entrypoint.sh"]
+     {{- else if eq .Values.appType "node" }}
+      containers:
+      - name: nodejs
+        image: {{ .Values.image.imageName }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+      {{- end }}
+        volumeMounts:
+         - name: m-agent
+           mountPath: /opt
+         - name: app-volume
+           {{- if eq .Values.appType "war" }}
+           mountPath: /app/tomcat/webapps
+           {{- else }}
+           mountPath: /app
+           {{- end }}
+          {{- range .Values.volumeMounts }}
+            {{- with. }}
+         - name: {{ .name }}
+           mountPath: {{ .mountPath }}
+           {{- end}}
+           {{- end}}
+          {{- if .Values.applog }}
+         - name: app-log
+           mountPath: /alidata1/app_log/
+           subPath: {{ include "Tchart.name" . }}
+          {{- end }}
+          {{- if .Values.tracelog }}
+         - name: trace-log
+           mountPath: /alidata1/app_trace_log/
+           subPath: {{ include "Tchart.name" . }}
+          {{- end }}
+        {{- if .Values.selfalert }}  
+         - name: cache-volume
+           mountPath: /tmp
+        {{- end }}
+        ports:
+         - containerPort: {{ .Values.ports.containerPort }}
+           name: tcpport
+           protocol: TCP
+        livenessProbe:
+          tcpSocket:
+            port: {{ .Values.livenessProbe.port }}
+          initialDelaySeconds: 20
+          timeoutSeconds: 3
+          periodSeconds: 5
+          failureThreshold: 100
+        readinessProbe:
+          tcpSocket:
+            port: {{ .Values.livenessProbe.port }}
+          initialDelaySeconds: 20
+          timeoutSeconds: 3
+          periodSeconds: 5
+          failureThreshold: 100
+        resources:
+{{ toYaml .Values.resources | indent 10 }}          
+        env:
+        - name: JAVA_OPTS
+        {{- if .Values.javaopts.value }}
+          value: {{ .Values.javaopts.value }}
+        {{- else }}  
+          value: -javaagent:/opt/alert-monitor-trace-javaagent.jar -Dotel.resource.attributes=service.name={{ include "Tchart.name" . }}  -Dotel.metrics.exporter=none -Dotel.exporter.otlp.traces.endpoint=http://trace-collector.ebanma.com:4317 -Dotel.traces.sampler=parentbased_traceidratio -Dotel.traces.sampler.arg=0.001 -server -Xmx800m -Xms512m -Xmn256m -Xss256k -XX:PermSize=64m -XX:MaxPermSize=256m -XX:+DisableExplicitGC -XX:+UseConcMarkSweepGC -XX:+CMSParallelRemarkEnabled -XX:+UseCMSCompactAtFullCollection -XX:LargePageSizeInBytes=128m -XX:+UseFastAccessorMethods -XX:+UseCMSInitiatingOccupancyOnly -XX:CMSInitiatingOccupancyFraction=70 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/app/tomcat
+        {{- end }}
+{{- if .Values.selfalert }}
+      - name: {{ .Chart.Name }}-alert-prd
+        image: xxx.xxx.com/base/alert-agent-prd:v1
+        command: ["sh"]
+        args: ["-c", '/start.sh']
+        imagePullPolicy: Always
+        resources:
+          limits:
+            cpu: 200m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        ports:
+         - containerPort: 37320
+           name: tcpport
+           protocol: TCP
+        livenessProbe:
+          tcpSocket:
+            port: 37320
+          initialDelaySeconds: 180
+          timeoutSeconds: 3
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          tcpSocket:
+            port: 37320
+          initialDelaySeconds: 180
+          timeoutSeconds: 3
+          periodSeconds: 5
+          failureThreshold: 60
+        env:
+        - name: APP_TYPE
+          value: {{ .Values.appType }}
+        - name: APP_NAME
+          value: {{ .Chart.Name }}
+        - name: CLASSPATH
+          value: /app/alert-monitor-agent/java/jdk1.8.0_221/lib/dt.jar:/app/alert-monitor-agent/java/jdk1.8.0_221/lib/tools.jar
+        - name: APP_CONTAINER
+          value: "true"
+        - name: xconfig.zkConn
+          value: xxx.xxx.x.xxx:xxx,xxx.xx.x.xxx:xxxx,xxx.xx.x.xx:xxxx
+        - name: xconfig.profile
+          value: prd
+        - name: xconfig.userName
+          value: zcc_xconfig
+        - name: xconfig.password
+          value: "M1A@P32016!@#"
+        - name: xconfig.memoryMode
+          value: "true"
+        volumeMounts:
+        - name: cache-volume
+          mountPath: /tmp
+{{- end }}
+      volumes:
+      - name: m-agent
+        persistentVolumeClaim:
+          claimName: pvc-agent
+      - name: cat
+        persistentVolumeClaim:
+          claimName: pvc-new-cat
+      - name: xconfig
+        persistentVolumeClaim:
+          claimName: pvc-new-xconfig
+      - name: app-volume
+        emptyDir: {}
+      {{- if .Values.applog }}
+      - name: app-log
+        persistentVolumeClaim:
+          claimName: log-app-nas
+      {{- end }}
+      {{- if .Values.tracelog }}
+      - name: trace-log
+        persistentVolumeClaim:
+          claimName: log-trace-nas
+      {{- end }}
+      {{- if .Values.selfalert }}
+      - name: cache-volume
+        emptyDir: {}
+      {{- end }}
+    {{- with .Values.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+    {{- end }}
+    {{- with .Values.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+    {{- end }}
